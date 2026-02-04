@@ -1,6 +1,5 @@
 import supabase from '../config/supabaseClient.js';
 
-// Create new order
 export const createOrder = async (req, res) => {
     try {
         const {
@@ -14,7 +13,6 @@ export const createOrder = async (req, res) => {
             notes
         } = req.body;
 
-        // Validation
         if (!user_id || !address_id || !items || !Array.isArray(items) || items.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -29,13 +27,8 @@ export const createOrder = async (req, res) => {
             });
         }
 
-        // Normalize payment_method (accept both 'cod' and 'COD')
         const normalizedPaymentMethod = String(payment_method).toLowerCase() === 'cod' ? 'cod' : String(payment_method);
-
-        // Calculate final amount
         const final_amount = (total_amount || 0) - (discount_amount || 0) + (shipping_charges || 0);
-
-        // Generate order number: GG-YYYYMMDD-XXXXX
         const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
         const todayStart = new Date().toISOString().split('T')[0];
         const { count, error: countError } = await supabase
@@ -92,7 +85,6 @@ export const createOrder = async (req, res) => {
             });
         }
 
-        // Create order items
         const orderItems = items.map(item => ({
             order_id: order.id,
             product_id: item.product_id,
@@ -120,14 +112,7 @@ export const createOrder = async (req, res) => {
             });
         }
 
-        for (const item of items) {
-            await supabase.rpc('decrement_stock', {
-                product_id: item.product_id,
-                quantity: item.quantity
-            }).catch(() => {});
-        }
-
-        const { data: completeOrder, error: fetchError } = await supabase
+        const { data: completeOrder } = await supabase
             .from('orders')
             .select(`
                 *,
@@ -135,27 +120,17 @@ export const createOrder = async (req, res) => {
                 order_items (*)
             `)
             .eq('id', order.id)
-            .single();
-
         const responseData = completeOrder || { ...order, addresses: null, order_items: createdItems };
-        try {
-            res.status(201).json({
-                success: true,
-                message: 'Order created successfully',
-                data: responseData
-            });
-        } catch (jsonErr) {
-            res.status(201).json({
-                success: true,
-                message: 'Order created successfully',
-                data: { id: order.id, order_number: order.order_number, order_items: createdItems }
-            });
-        }
+        res.status(201).json({
+            success: true,
+            message: 'Order created successfully',
+            data: responseData
+        });
     } catch (error) {
         res.status(500).json({
             success: false,
             message: 'Internal server error',
-            error: error.message
+            error: error?.message || String(error)
         });
     }
 };
