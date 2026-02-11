@@ -8,6 +8,7 @@ import orderRoutes from './Routes/orderRoutes.js';
 import staticImagesRoutes from './Routes/staticImagesRoutes.js';
 import reviewRoutes from './Routes/reviewRoutes.js';
 import preorderRoutes from './Routes/preorderRoutes.js';
+import { isConfigured as mailConfigured } from './config/mailer.js';
 
 dotenv.config();
 
@@ -20,7 +21,9 @@ const allowedOrigins = [
     'http://localhost:5173',
     'http://localhost:3000',
     'http://127.0.0.1:5173',
-    'http://127.0.0.1:3000'
+    'http://127.0.0.1:3000',
+    'http://localhost',
+    'http://localhost:80',
 ];
 if (process.env.CORS_ORIGIN) {
     process.env.CORS_ORIGIN.split(',').forEach(origin => {
@@ -55,6 +58,9 @@ app.use(express.json());
 
 // Health check (for Render / load balancers)
 app.get('/api/health', (req, res) => res.status(200).json({ ok: true }));
+
+// Mail status (to verify SMTP env on production; does not test actual send)
+app.get('/api/health/mail', (req, res) => res.status(200).json({ mailConfigured: mailConfigured }));
 
 // Routes
 app.use('/api/carousel', carouselRoutes);

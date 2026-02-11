@@ -40,14 +40,23 @@ export async function sendMail(options) {
     }
 
     try {
-        const from = MAIL_FROM || SMTP_USER || 'noreply@gawriganga.com';
+        // Gmail often filters or blocks when From address ≠ SMTP_USER. Use SMTP_USER as From for best deliverability.
+        const isGmail = SMTP_HOST && String(SMTP_HOST).toLowerCase().includes('gmail');
+        const fromEmail = isGmail ? SMTP_USER : (MAIL_FROM || SMTP_USER || 'noreply@gawriganga.com');
+        const fromDisplay = typeof fromEmail === 'string' && fromEmail.includes('<')
+            ? fromEmail
+            : `Gawri Ganga <${fromEmail}>`;
+
         const result = await transporter.sendMail({
-            from: typeof from === 'string' && from.includes('<') ? from : `Gawri Ganga <${from}>`,
+            from: fromDisplay,
             to: options.to,
             subject: options.subject,
             text: options.text,
             html: options.html || options.text
         });
+
+        const toMasked = options.to ? `${String(options.to).slice(0, 2)}***@${(options.to.split('@')[1] || '')}` : '?';
+        console.log('[Mail] Sent', result.messageId, 'to', toMasked);
         return { success: true, messageId: result.messageId };
     } catch (err) {
         console.error('[Mail] Send failed:', err?.message || err);
