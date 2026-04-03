@@ -1,6 +1,8 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../config/db.js';
+import pool from '../config/db.js';
+import { ensureCashbackSchema, awardCampaignTx } from './cashbackController.js';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
@@ -57,6 +59,41 @@ export const register = async (req, res) => {
     );
 
     const user = insertResult.rows[0];
+
+    try {
+      await ensureCashbackSchema();
+      const activeCampaigns = await query(
+        `SELECT id
+         FROM cashback_campaigns
+         WHERE status = 'active'
+           AND (starts_at IS NULL OR starts_at <= NOW())
+           AND (ends_at IS NULL OR ends_at >= NOW())
+         ORDER BY created_at ASC`,
+      );
+      for (const campaign of activeCampaigns.rows) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const awardResult = await awardCampaignTx(client, {
+            campaignId: campaign.id,
+            userId: user.id,
+            triggerEvent: 'signup',
+          });
+          if (awardResult.success) {
+            await client.query('COMMIT');
+          } else {
+            await client.query('ROLLBACK');
+          }
+        } catch (_e) {
+          await client.query('ROLLBACK');
+        } finally {
+          client.release();
+        }
+      }
+    } catch (_cashbackError) {
+      // Signup should not fail if cashback infrastructure is unavailable.
+    }
+
     const token = signToken(user);
 
     res.status(201).json({

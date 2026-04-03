@@ -1,6 +1,9 @@
 import { query } from '../config/db.js';
+import pool from '../config/db.js';
+import { ensureCashbackSchema } from './cashbackController.js';
 
 export const createOrder = async (req, res) => {
+    const client = await pool.connect();
     try {
         const user_id = req.user?.id;
         if (!user_id) {
@@ -18,6 +21,8 @@ export const createOrder = async (req, res) => {
             blessing_charge = 0,
             payment_method,
             notes,
+            use_wallet = false,
+            wallet_amount_to_use = 0,
         } = req.body;
 
         if (!address_id || !items || !Array.isArray(items) || items.length === 0) {
@@ -46,11 +51,12 @@ export const createOrder = async (req, res) => {
 
         const normalizedPaymentMethod =
             String(payment_method).toLowerCase() === 'cod' ? 'cod' : String(payment_method);
-        const final_amount =
+        const computedFinalAmount =
             (Number(total_amount) || 0) -
             (Number(discount_amount) || 0) +
             (Number(shipping_charges) || 0) +
             (Number(blessing_charge) || 0);
+        const requestedWalletAmount = use_wallet ? Math.max(0, Number(wallet_amount_to_use) || 0) : 0;
         const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
         const todayStart = new Date().toISOString().split('T')[0];
 
@@ -61,6 +67,29 @@ export const createOrder = async (req, res) => {
         const count = parseInt(countRes.rows[0]?.c || 0, 10);
         const orderNumber = `GG-${today}-${String(count + 1).padStart(5, '0')}`;
 
+        await client.query('BEGIN');
+        await ensureCashbackSchema();
+
+        let walletAmountUsed = 0;
+        let walletBalanceAfter = null;
+        if (requestedWalletAmount > 0) {
+            const walletRes = await client.query(
+                'SELECT COALESCE(cashback_amount, 0) AS balance FROM users WHERE id = $1 FOR UPDATE',
+                [user_id],
+            );
+            const currentBalance = Number(walletRes.rows[0]?.balance || 0);
+            walletAmountUsed = Math.min(requestedWalletAmount, currentBalance, computedFinalAmount);
+            if (walletAmountUsed > 0) {
+                walletBalanceAfter = currentBalance - walletAmountUsed;
+                await client.query(
+                    'UPDATE users SET cashback_amount = $1 WHERE id = $2',
+                    [walletBalanceAfter, user_id],
+                );
+            }
+        }
+
+        const final_amount = Math.max(0, computedFinalAmount - walletAmountUsed);
+
         const orderData = {
             user_id,
             order_number: orderNumber,
@@ -69,8 +98,9 @@ export const createOrder = async (req, res) => {
             discount_amount: Number(discount_amount) || 0,
             shipping_charges: Number(shipping_charges) || 0,
             final_amount,
-            payment_method: normalizedPaymentMethod,
-            payment_status: 'pending',
+            payment_method:
+                final_amount <= 0 && walletAmountUsed > 0 ? 'wallet' : normalizedPaymentMethod,
+            payment_status: final_amount <= 0 ? 'paid' : 'pending',
             order_status: 'pending',
             notes:
                 Number(blessing_charge) > 0
@@ -81,13 +111,14 @@ export const createOrder = async (req, res) => {
         };
 
         if (Number.isNaN(orderData.final_amount)) {
+            await client.query('ROLLBACK');
             return res.status(400).json({
                 success: false,
                 message: 'Invalid amount values',
             });
         }
 
-        const orderRes = await query(
+        const orderRes = await client.query(
             `INSERT INTO orders (user_id, order_number, address_id, total_amount, discount_amount, shipping_charges, final_amount, payment_method, payment_status, order_status, notes)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              RETURNING *`,
@@ -107,6 +138,7 @@ export const createOrder = async (req, res) => {
         );
         const order = orderRes.rows[0];
         if (!order) {
+            await client.query('ROLLBACK');
             return res.status(500).json({
                 success: false,
                 message: 'Failed to create order',
@@ -114,7 +146,7 @@ export const createOrder = async (req, res) => {
         }
 
         for (const item of items) {
-            await query(
+            await client.query(
                 `INSERT INTO order_items (order_id, product_id, product_name, product_price, quantity, subtotal)
                  VALUES ($1, $2, $3, $4, $5, $6)`,
                 [
@@ -128,12 +160,31 @@ export const createOrder = async (req, res) => {
             );
         }
 
-        const itemsRes = await query('SELECT * FROM order_items WHERE order_id = $1', [order.id]);
-        const addrRes = await query('SELECT * FROM addresses WHERE id = $1', [order.address_id]);
+        if (walletAmountUsed > 0) {
+            const numericSourceId = Number.isFinite(Number(order.id)) ? Number(order.id) : null;
+            await client.query(
+                `INSERT INTO wallet_transactions (user_id, txn_type, source_type, source_id, amount, balance_before, balance_after, remarks)
+                 VALUES ($1, 'debit', 'order', $2, $3, $4, $5, $6)`,
+                [
+                    user_id,
+                    numericSourceId,
+                    walletAmountUsed,
+                    walletBalanceAfter + walletAmountUsed,
+                    walletBalanceAfter,
+                    `Wallet used in order ${order.order_number} (id: ${order.id})`,
+                ],
+            );
+        }
+
+        const itemsRes = await client.query('SELECT * FROM order_items WHERE order_id = $1', [order.id]);
+        const addrRes = await client.query('SELECT * FROM addresses WHERE id = $1', [order.address_id]);
+        await client.query('COMMIT');
         const responseData = {
             ...order,
             addresses: addrRes.rows[0] || null,
             order_items: itemsRes.rows || [],
+            wallet_amount_used: walletAmountUsed,
+            payable_after_wallet: final_amount,
         };
 
         res.status(201).json({
@@ -142,10 +193,13 @@ export const createOrder = async (req, res) => {
             data: responseData,
         });
     } catch (error) {
+        await client.query('ROLLBACK');
         res.status(500).json({
             success: false,
             message: 'Internal server error',
         });
+    } finally {
+        client.release();
     }
 };
 

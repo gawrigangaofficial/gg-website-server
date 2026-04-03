@@ -15,6 +15,7 @@ import { paymentCallback } from './Controller/paymentController.js';
 import staticImagesRoutes from './Routes/staticImagesRoutes.js';
 import reviewRoutes from './Routes/reviewRoutes.js';
 import authRoutes from './Routes/authRoutes.js';
+import cashbackRoutes from './Routes/cashbackRoutes.js';
 import { isConfigured as mailConfigured } from './config/mailer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -134,6 +135,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/static-images', staticImagesRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api', cashbackRoutes);
 
 // Error handling for undefined API routes
 app.use((req, res, next) => {
