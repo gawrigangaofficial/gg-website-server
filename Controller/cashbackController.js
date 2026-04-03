@@ -122,6 +122,19 @@ export const checkEligibility = async (req, res) => {
     const campaignValidation = validateCampaignRow(campaignRes.rows[0]);
     if (!campaignValidation.ok) return res.status(200).json({ success: true, data: { eligible: false, reason_code: campaignValidation.code } });
 
+    // Business rule: cashback only for true first-time buyers (no prior orders)
+    const ordersRes = await query(
+      'SELECT COUNT(*) AS c FROM orders WHERE user_id = $1',
+      [userId],
+    );
+    const hasAnyOrder = Number(ordersRes.rows[0]?.c || 0) > 0;
+    if (hasAnyOrder) {
+      return res.status(200).json({
+        success: true,
+        data: { eligible: false, reason_code: 'NOT_FIRST_ORDER' },
+      });
+    }
+
     const awarded = await query(
       'SELECT 1 FROM cashback_campaign_awards WHERE campaign_id = $1 AND user_id = $2',
       [campaignId, userId],
@@ -145,6 +158,19 @@ export const awardCampaign = async (req, res) => {
     const triggerEvent = req.body?.trigger_type || 'signup';
     if (!userId) return res.status(401).json({ success: false, code: 'NOT_AUTHENTICATED' });
     if (!campaignId) return res.status(400).json({ success: false, code: 'INVALID_CAMPAIGN_ID' });
+
+    // Safety: enforce first-time buyer rule at award-time as well
+    const ordersRes = await client.query(
+      'SELECT COUNT(*) AS c FROM orders WHERE user_id = $1',
+      [userId],
+    );
+    const hasAnyOrder = Number(ordersRes.rows[0]?.c || 0) > 0;
+    if (hasAnyOrder) {
+      return res.status(200).json({
+        success: true,
+        data: { status: 'NOT_FIRST_ORDER' },
+      });
+    }
 
     await client.query('BEGIN');
     const result = await awardCampaignTx(client, { campaignId, userId, triggerEvent, idempotencyKey });
@@ -194,7 +220,26 @@ export const getWalletTransactions = async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Not authenticated' });
     const txRes = await query(
-      'SELECT * FROM wallet_transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
+      `SELECT
+         id,
+         user_id,
+         txn_type,
+         source_type,
+         source_id,
+         amount,
+         CASE
+           WHEN LOWER(txn_type) = 'debit' THEN -ABS(amount)
+           ELSE ABS(amount)
+         END AS signed_amount,
+         balance_before,
+         balance_after,
+         (COALESCE(balance_after, 0) - COALESCE(balance_before, 0)) AS balance_diff,
+         remarks,
+         created_at
+       FROM wallet_transactions
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
       [userId],
     );
     res.status(200).json({ success: true, data: txRes.rows });

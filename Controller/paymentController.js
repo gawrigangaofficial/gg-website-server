@@ -1,5 +1,5 @@
 import sha512 from 'js-sha512';
-import { query } from '../config/db.js';
+import pool, { query } from '../config/db.js';
 
 const EASEBUZZ_KEY = process.env.EASEBUZZ_KEY;
 const EASEBUZZ_SALT = process.env.EASEBUZZ_SALT;
@@ -59,15 +59,50 @@ async function createOrderFromDraft(draft) {
     const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const todayStart = new Date().toISOString().split('T')[0];
 
+    const client = await pool.connect();
     try {
-        const countRes = await query(
+        await client.query('BEGIN');
+
+        const explicitUseWallet = String(draft.use_wallet).toLowerCase() === 'true' || draft.use_wallet === true;
+        const explicitWalletAmount = Math.max(0, Number(draft.wallet_amount_to_use) || 0);
+        const derivedWalletAmount = Math.max(
+            0,
+            (Number(draft.total_amount) || 0) +
+            (Number(draft.shipping_charges) || 0) +
+            (Number(draft.blessing_charge) || 0) -
+            (Number(draft.final_amount) || 0),
+        );
+        const requestedWalletAmount = Math.max(explicitWalletAmount, derivedWalletAmount);
+        const useWallet = explicitUseWallet || requestedWalletAmount > 0;
+        let walletAmountUsed = 0;
+        let walletBalanceBefore = 0;
+        let walletBalanceAfter = 0;
+
+        if (requestedWalletAmount > 0) {
+            const walletRes = await client.query(
+                'SELECT COALESCE(cashback_amount, 0) AS balance FROM users WHERE id = $1 FOR UPDATE',
+                [draft.user_id],
+            );
+            walletBalanceBefore = Number(walletRes.rows[0]?.balance || 0);
+            walletAmountUsed = Math.min(requestedWalletAmount, walletBalanceBefore);
+            walletBalanceAfter = walletBalanceBefore - walletAmountUsed;
+
+            if (walletAmountUsed > 0) {
+                await client.query(
+                    'UPDATE users SET cashback_amount = $1 WHERE id = $2',
+                    [walletBalanceAfter, draft.user_id],
+                );
+            }
+        }
+
+        const countRes = await client.query(
             'SELECT COUNT(*) AS c FROM orders WHERE created_at >= $1::date',
             [todayStart],
         );
         const count = parseInt(countRes.rows[0]?.c || 0, 10);
         const orderNumber = `GG-${today}-${String(count + 1).padStart(5, '0')}`;
 
-        const orderRes = await query(
+        const orderRes = await client.query(
             `INSERT INTO orders (user_id, order_number, address_id, total_amount, discount_amount, shipping_charges, final_amount, payment_method, payment_status, order_status, notes)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              RETURNING *`,
@@ -90,7 +125,7 @@ async function createOrderFromDraft(draft) {
 
         for (const item of items) {
             const subtotal = (item.product_price || 0) * (item.quantity || 0);
-            await query(
+            await client.query(
                 `INSERT INTO order_items (order_id, product_id, product_name, product_price, quantity, subtotal)
                  VALUES ($1, $2, $3, $4, $5, $6)`,
                 [
@@ -104,10 +139,30 @@ async function createOrderFromDraft(draft) {
             );
         }
 
+        if (walletAmountUsed > 0) {
+            const numericSourceId = Number.isFinite(Number(order.id)) ? Number(order.id) : null;
+            await client.query(
+                `INSERT INTO wallet_transactions (user_id, txn_type, source_type, source_id, amount, balance_before, balance_after, remarks)
+                 VALUES ($1, 'debit', 'order', $2, $3, $4, $5, $6)`,
+                [
+                    draft.user_id,
+                    numericSourceId,
+                    walletAmountUsed,
+                    walletBalanceBefore,
+                    walletBalanceAfter,
+                    `Wallet used in online order ${order.order_number} (id: ${order.id})`,
+                ],
+            );
+        }
+
+        await client.query('COMMIT');
         return { order, error: null };
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error('createOrderFromDraft error:', err.message, err.code, err.detail);
         return { order: null, error: err.message || String(err) };
+    } finally {
+        client.release();
     }
 }
 
@@ -135,6 +190,8 @@ export const initiatePayment = async (req, res) => {
             shipping_charges = 0,
             blessing_charge = 0,
             final_amount,
+            use_wallet = false,
+            wallet_amount_to_use = 0,
             firstname,
             email,
             phone,
@@ -176,6 +233,8 @@ export const initiatePayment = async (req, res) => {
             shipping_charges: Number(shipping_charges) || 0,
             blessing_charge: Number(blessing_charge) || 0,
             final_amount: amountNum,
+            use_wallet: !!use_wallet,
+            wallet_amount_to_use: Math.max(0, Number(wallet_amount_to_use) || 0),
             firstname: String(firstname).trim(),
             email: String(email).trim(),
             phone: String(phone).replace(/\D/g, '').slice(0, 10) || '0000000000',
@@ -184,8 +243,11 @@ export const initiatePayment = async (req, res) => {
         let draftRes;
         try {
             draftRes = await query(
-                `INSERT INTO order_drafts (user_id, address_id, items, total_amount, discount_amount, shipping_charges, final_amount, firstname, email, phone)
-                 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10)
+                `INSERT INTO order_drafts (
+                    user_id, address_id, items, total_amount, discount_amount, shipping_charges,
+                    blessing_charge, final_amount, use_wallet, wallet_amount_to_use, firstname, email, phone
+                 )
+                 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                  RETURNING *`,
                 [
                     draftData.user_id,
@@ -194,7 +256,10 @@ export const initiatePayment = async (req, res) => {
                     draftData.total_amount,
                     draftData.discount_amount,
                     draftData.shipping_charges,
+                    draftData.blessing_charge,
                     draftData.final_amount,
+                    draftData.use_wallet,
+                    draftData.wallet_amount_to_use,
                     draftData.firstname,
                     draftData.email,
                     draftData.phone,
@@ -243,7 +308,10 @@ export const initiatePayment = async (req, res) => {
             surl,
             furl,
             udf1,
-            udf2: '', udf3: '', udf4: '', udf5: '', udf6: '', udf7: '', udf8: '', udf9: '', udf10: '',
+            // Carry wallet data through gateway callback, independent of order_drafts schema.
+            udf2: draftData.use_wallet ? '1' : '0',
+            udf3: String(draftData.wallet_amount_to_use || 0),
+            udf4: '', udf5: '', udf6: '', udf7: '', udf8: '', udf9: '', udf10: '',
         };
         data.hash = generatePaymentHash(data, EASEBUZZ_KEY, EASEBUZZ_SALT);
 
@@ -326,7 +394,18 @@ export const paymentCallback = async (req, res) => {
             const items = typeof draft.items === 'object' && Array.isArray(draft.items)
                 ? draft.items
                 : (typeof draft.items === 'string' ? JSON.parse(draft.items || '[]') : []);
-            const draftWithItems = { ...draft, items };
+            const draftWithItems = {
+                ...draft,
+                items,
+                // Merge both persisted and callback wallet data robustly.
+                use_wallet:
+                    (String(draft.use_wallet).toLowerCase() === 'true' || draft.use_wallet === true) ||
+                    (String(body.udf2 || '') === '1'),
+                wallet_amount_to_use: Math.max(
+                    Number(draft.wallet_amount_to_use) || 0,
+                    Number(body.udf3) || 0,
+                ),
+            };
 
             const { order, error: createError } = await createOrderFromDraft(draftWithItems);
             if (createError || !order) {
