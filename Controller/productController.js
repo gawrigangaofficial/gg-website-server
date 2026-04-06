@@ -1,6 +1,16 @@
 import { query } from '../config/db.js';
 import { getS3PublicUrl } from '../config/s3.js';
 
+/** Read discount from DB row (node-pg uses snake_case; tolerate camelCase). Null/empty → null; 0+ → number. */
+function pickDiscountPercent(row) {
+    if (!row || typeof row !== 'object') return null;
+    const raw = row.discount_percent ?? row.discountPercent;
+    if (raw === null || raw === undefined || raw === '') return null;
+    const n = parseFloat(raw);
+    if (!Number.isFinite(n)) return null;
+    return n;
+}
+
 function toProductImages(imagesData) {
     const out = [];
     if (!imagesData) return out;
@@ -32,7 +42,8 @@ export const getProductsByCategory = async (req, res) => {
 
         let sql = `
             SELECT id, name, description, short_description, price, stock_quantity,
-                   category_id, subcategory, deity, benefits, planet, rarity, status, created_at
+                   category_id, subcategory, deity, benefits, planet, rarity, status, created_at,
+                   discount_percent
             FROM products
             WHERE status = 'active'
         `;
@@ -104,11 +115,13 @@ export const getProductsByCategory = async (req, res) => {
             benefits: product.benefits || '',
             planet: product.planet || '',
             rarity: product.rarity || '',
+            discount_percent: pickDiscountPercent(product),
             images: productImagesMap[product.id] || [],
         }));
 
         res.status(200).json({ success: true, data: transformedProducts });
     } catch (error) {
+        console.error('[getProductsByCategory]', error?.message || error);
         res.status(500).json({
             success: false,
             error: 'Internal server error',
@@ -175,7 +188,8 @@ export const getProductById = async (req, res) => {
 
         const productRes = await query(
             `SELECT id, name, description, short_description, price, stock_quantity,
-                    category_id, subcategory, deity, benefits, planet, rarity, status, created_at
+                    category_id, subcategory, deity, benefits, planet, rarity, status, created_at,
+                    discount_percent
              FROM products WHERE id = $1 AND status = 'active'`,
             [id],
         );
@@ -214,10 +228,12 @@ export const getProductById = async (req, res) => {
                 benefits: product.benefits || '',
                 planet: product.planet || '',
                 rarity: product.rarity || '',
+                discount_percent: pickDiscountPercent(product),
                 images,
             },
         });
     } catch (error) {
+        console.error('[getProductById]', error?.message || error);
         res.status(500).json({
             success: false,
             error: 'Internal server error',
