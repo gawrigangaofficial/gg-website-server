@@ -41,7 +41,7 @@ export const getProductsByCategory = async (req, res) => {
         }
 
         let sql = `
-            SELECT id, name, description, short_description, price, stock_quantity,
+            SELECT id, slug, name, description, short_description, price, stock_quantity,
                    category_id, subcategory, deity, benefits, planet, rarity, status, created_at,
                    discount_percent, is_featured
             FROM products
@@ -111,6 +111,7 @@ export const getProductsByCategory = async (req, res) => {
 
         const transformedProducts = products.map((product) => ({
             id: product.id,
+            slug: product.slug || null,
             name: product.name,
             description: product.description,
             short_description: product.short_description || '',
@@ -182,23 +183,23 @@ export const getFilterOptions = async (req, res) => {
     }
 };
 
-// Get single product by ID
-export const getProductById = async (req, res) => {
+// Get single product by slug
+export const getProductBySlug = async (req, res) => {
     try {
-        const { id } = req.params;
-        if (!id) {
+        const { slug } = req.params;
+        if (!slug) {
             return res.status(400).json({
                 success: false,
-                error: 'Product ID is required',
+                error: 'Product slug is required',
             });
         }
 
         const productRes = await query(
-            `SELECT id, name, description, short_description, price, stock_quantity,
+            `SELECT id, slug, name, description, short_description, price, stock_quantity,
                     category_id, subcategory, deity, benefits, planet, rarity, status, created_at,
                     discount_percent, is_featured
-             FROM products WHERE id = $1 AND status = 'active'`,
-            [id],
+             FROM products WHERE slug = $1 AND status = 'active'`,
+            [slug],
         );
         const product = productRes.rows[0];
         if (!product) {
@@ -207,7 +208,7 @@ export const getProductById = async (req, res) => {
 
         const imgRes = await query(
             'SELECT * FROM product_images WHERE product_id = $1',
-            [id],
+            [product.id],
         );
         let images = [];
         if (imgRes.rows[0]) images = toProductImages(imgRes.rows[0]);
@@ -224,6 +225,7 @@ export const getProductById = async (req, res) => {
             success: true,
             data: {
                 id: product.id,
+                slug: product.slug || null,
                 name: product.name,
                 description: product.description,
                 short_description: product.short_description || '',
@@ -241,7 +243,7 @@ export const getProductById = async (req, res) => {
             },
         });
     } catch (error) {
-        console.error('[getProductById]', error?.message || error);
+        console.error('[getProductBySlug]', error?.message || error);
         res.status(500).json({
             success: false,
             error: 'Internal server error',
