@@ -212,8 +212,6 @@ async function sendOtpViaFast2Sms(phoneNumber, otp, rawFullName = '') {
         'SMS was not accepted by Fast2SMS. Check API wallet balance, DLT template, and KYC in the Fast2SMS dashboard.',
     );
   }
-
-  console.log('[Fast2SMS] OK', { request_id: data?.request_id, route: FAST2SMS_ROUTE });
 }
 
 function placeholderPhoneEmail(phoneNumber) {
