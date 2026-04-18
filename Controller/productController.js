@@ -11,6 +11,16 @@ function pickDiscountPercent(row) {
     return n;
 }
 
+/** DB column `sale_type`: 'order' | 'preorder' (tolerate pre-order, pre_order). */
+function normalizeSaleType(raw) {
+    const s = String(raw ?? 'order')
+        .trim()
+        .toLowerCase()
+        .replace(/-/g, '_');
+    if (s === 'preorder' || s === 'pre_order') return 'preorder';
+    return 'order';
+}
+
 function pushImageFromValue(out, value) {
     if (value == null) return;
 
@@ -87,6 +97,45 @@ function toProductImages(imagesData) {
     return [...new Set(out)];
 }
 
+/** Format numeric measure for API (e.g. 200.0000 → "200"). */
+function formatMeasureNumericDisplay(raw) {
+    if (raw == null || raw === '') return '';
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return String(raw).trim();
+    if (Number.isInteger(n)) return String(n);
+    const s = parseFloat(n.toFixed(10)).toString();
+    return s.replace(/\.?0+$/, '') || '0';
+}
+
+/**
+ * Measurements live on `products` columns: product_measure_value, product_measure_unit (e.g. 200 + ml).
+ */
+function hasNumericMeasure(raw) {
+    if (raw == null || raw === '') return false;
+    if (typeof raw === 'string' && raw.trim() === '') return false;
+    return Number.isFinite(Number(raw));
+}
+
+function measuresFromProductRow(row) {
+    if (!row || typeof row !== 'object') return [];
+    const rawVal = row.product_measure_value ?? row.productMeasureValue;
+    const rawUnit = row.product_measure_unit ?? row.productMeasureUnit;
+    const hasVal = hasNumericMeasure(rawVal);
+    const unitName = rawUnit != null ? String(rawUnit).trim() : '';
+    if (!hasVal && !unitName) return [];
+
+    const valueStr = hasVal ? formatMeasureNumericDisplay(rawVal) : '';
+    const label = [valueStr, unitName].filter(Boolean).join(' ').trim();
+    return [
+        {
+            value: valueStr || (unitName ? '—' : ''),
+            unit_name: unitName,
+            unit_symbol: unitName,
+            label: (label || unitName || valueStr || '—').trim(),
+        },
+    ];
+}
+
 // Get products by category with filters
 export const getProductsByCategory = async (req, res) => {
     try {
@@ -107,7 +156,8 @@ export const getProductsByCategory = async (req, res) => {
         let sql = `
             SELECT id, slug, name, description, short_description, price, stock_quantity,
                    category_id, subcategory, deity, benefits, purposes, planet, rarity, status, created_at,
-                   discount_percent, is_featured
+                   discount_percent, is_featured, sale_type,
+                   product_measure_value, product_measure_unit
             FROM products
             WHERE status = 'active'
         `;
@@ -198,7 +248,9 @@ export const getProductsByCategory = async (req, res) => {
             rarity: product.rarity || '',
             discount_percent: pickDiscountPercent(product),
             is_featured: product.is_featured ?? false,
+            sale_type: normalizeSaleType(product.sale_type),
             images: productImagesMap[product.id] || [],
+            measures: measuresFromProductRow(product),
         }));
 
         res.status(200).json({ success: true, data: transformedProducts });
@@ -279,7 +331,8 @@ export const getProductBySlug = async (req, res) => {
         const productRes = await query(
             `SELECT id, slug, name, description, short_description, price, stock_quantity,
                     category_id, subcategory, deity, benefits, purposes, planet, rarity, status, created_at,
-                    discount_percent, is_featured
+                    discount_percent, is_featured, sale_type,
+                    product_measure_value, product_measure_unit
              FROM products WHERE slug = $1 AND status = 'active'`,
             [slug],
         );
@@ -321,7 +374,9 @@ export const getProductBySlug = async (req, res) => {
                 rarity: product.rarity || '',
                 discount_percent: pickDiscountPercent(product),
                 is_featured: product.is_featured ?? false,
+                sale_type: normalizeSaleType(product.sale_type),
                 images,
+                measures: measuresFromProductRow(product),
             },
         });
     } catch (error) {
