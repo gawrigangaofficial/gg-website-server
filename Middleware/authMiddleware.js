@@ -30,3 +30,21 @@ export const authenticate = (req, res, next) => {
   }
 };
 
+export const optionalAuthenticate = (req, _res, next) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token) {
+    req.user = null;
+    return next();
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+  } catch (_err) {
+    req.user = null;
+  }
+  return next();
+};
+

@@ -17,6 +17,8 @@ import reviewRoutes from './Routes/reviewRoutes.js';
 import authRoutes from './Routes/authRoutes.js';
 import cashbackRoutes from './Routes/cashbackRoutes.js';
 import couponRoutes from './Routes/couponRoutes.js';
+import blogRoutes from './Routes/blogRoutes.js';
+import preorderRoutes from './Routes/preorderRoutes.js';
 import { isConfigured as mailConfigured } from './config/mailer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -187,6 +189,8 @@ app.use('/api/static-images', staticImagesRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api', cashbackRoutes);
 app.use('/api/coupons', couponRoutes);
+app.use('/api/blogs', blogRoutes);
+app.use('/api/preorders', preorderRoutes);
 
 // Error handling for undefined API routes
 app.use((req, res, next) => {
