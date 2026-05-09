@@ -259,6 +259,7 @@ export const initiatePayment = async (req, res) => {
             final_amount,
             use_wallet = false,
             wallet_amount_to_use = 0,
+            payment_method = 'upi',
             firstname,
             email,
             phone,
@@ -296,6 +297,7 @@ export const initiatePayment = async (req, res) => {
             clientDiscountAmount: discount_amount,
             shipping_charges,
             blessing_charge,
+            payment_method,
         });
         if (!pricing.ok) {
             return res.status(pricing.status || 400).json({
