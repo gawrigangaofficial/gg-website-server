@@ -26,7 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3001;
 const isProduction = process.env.NODE_ENV === 'production';
 
 if (isProduction) {
@@ -249,6 +249,6 @@ process.on('uncaughtException', (err) => {
     process.exit(1);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT,"0.0.0.0", () => {
     if (!isProduction) console.log(`Server is running on port ${PORT}`);
 });

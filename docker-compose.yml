@@ -1,6 +1,26 @@
+# Local: API + Postgres. Set POSTGRES_PASSWORD in .env; leave DATABASE_URL unset to use the postgres service.
+# EC2 / external RDS: use repo-root docker-compose-ec2.yml instead (no postgres service).
 name: gawriganga-ec2
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: GgDb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d GgDb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   server:
     build:
       context: .
@@ -17,12 +37,17 @@ services:
     ports:
       - "${PORT:-3001}:3001"
 
+    depends_on:
+      postgres:
+        condition: service_healthy
+
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 3001
 
-      DATABASE_URL: ${DATABASE_URL}
-      PGSSLMODE: ${PGSSLMODE}
+      # Unset DATABASE_URL in .env to use the postgres service below; # and & in passwords must be URL-encoded.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/GgDb}
+      PGSSLMODE: ${PGSSLMODE:-disable}
 
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -51,3 +76,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  postgres_data:
