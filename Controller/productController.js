@@ -136,10 +136,50 @@ function measuresFromProductRow(row) {
     ];
 }
 
+/** Append subcategory / deity / planet / rarity / purpose filters for a SQL table alias. */
+function appendAttributeFilters(alias, filters, params, startIdx) {
+    const { subcategory, deity, planet, rarity, purpose } = filters;
+    let sql = '';
+    let idx = startIdx;
+
+    if (subcategory && subcategory !== 'all') {
+        sql += ` AND LOWER(TRIM(${alias}.subcategory)) = LOWER(TRIM($${idx}::text))`;
+        params.push(subcategory);
+        idx++;
+    }
+    if (deity && deity !== 'all') {
+        sql += ` AND ${alias}.deity = $${idx}`;
+        params.push(deity);
+        idx++;
+    }
+    if (planet && planet !== 'all') {
+        sql += ` AND ${alias}.planet = $${idx}`;
+        params.push(planet);
+        idx++;
+    }
+    if (rarity && rarity !== 'all') {
+        sql += ` AND ${alias}.rarity = $${idx}`;
+        params.push(rarity);
+        idx++;
+    }
+    if (purpose && purpose !== 'all') {
+        sql += ` AND EXISTS (
+            SELECT 1
+            FROM unnest(COALESCE(${alias}.purposes, ARRAY[]::text[])) AS purpose_token(token)
+            WHERE LOWER(TRIM(purpose_token.token)) = LOWER(TRIM($${idx}::text))
+        )`;
+        params.push(String(purpose).trim());
+        idx++;
+    }
+
+    return { sql, nextIdx: idx };
+}
+
 // Get products by category with filters
 export const getProductsByCategory = async (req, res) => {
     try {
         const { category, subcategory, deity, planet, rarity, search, featured, purpose } = req.query;
+        const listFilters = { subcategory, deity, planet, rarity, purpose };
 
         let categoryId = null;
         if (category) {
@@ -153,66 +193,102 @@ export const getProductsByCategory = async (req, res) => {
             categoryId = catRes.rows[0].id;
         }
 
+        let combosCategoryId = null;
+        const categoryNameNorm = String(category || '').trim().toLowerCase();
+        const includeLinkedCombos =
+            categoryId != null && categoryNameNorm !== 'combos';
+        if (includeLinkedCombos) {
+            const combosCatRes = await query(
+                'SELECT id FROM categories WHERE LOWER(name) = LOWER($1)',
+                ['Combos'],
+            );
+            if (combosCatRes.rows.length > 0) {
+                combosCategoryId = combosCatRes.rows[0].id;
+            }
+        }
+
         let sql = `
-            SELECT id, slug, name, description, short_description, price, stock_quantity,
-                   category_id, subcategory, deity, benefits, purposes, planet, rarity, status, created_at,
-                   discount_percent, is_featured, sale_type,
-                   product_measure_value, product_measure_unit
-            FROM products
-            WHERE status = 'active'
+            SELECT p.id, p.slug, p.name, p.description, p.short_description, p.price, p.stock_quantity,
+                   p.category_id, p.subcategory, p.deity, p.benefits, p.purposes, p.planet, p.rarity, p.status, p.created_at,
+                   p.discount_percent, p.is_featured, p.sale_type,
+                   p.product_measure_value, p.product_measure_unit
+            FROM products p
+            WHERE p.status = 'active'
         `;
         const params = [];
         let idx = 1;
 
         if (categoryId != null) {
-            sql += ` AND category_id = $${idx}`;
-            params.push(categoryId);
-            idx++;
+            if (includeLinkedCombos && combosCategoryId != null) {
+                params.push(categoryId, combosCategoryId, String(category).trim());
+                const categoryParam = idx;
+                const combosParam = idx + 1;
+                const categoryNameParam = idx + 2;
+                const filterStartIdx = idx + 3;
+                const directFilters = appendAttributeFilters('p', listFilters, params, filterStartIdx);
+
+                sql += ` AND (
+                    (p.category_id = $${categoryParam}${directFilters.sql})
+                    OR (
+                        p.category_id = $${combosParam}
+                        AND EXISTS (
+                            SELECT 1
+                            FROM unnest(COALESCE(p.related_categories, ARRAY[]::text[])) AS rc(token)
+                            WHERE LOWER(TRIM(rc.token)) = LOWER(TRIM($${categoryNameParam}::text))
+                        )
+                    )
+                )`;
+                idx = directFilters.nextIdx;
+            } else {
+                sql += ` AND p.category_id = $${idx}`;
+                params.push(categoryId);
+                idx++;
+                const attr = appendAttributeFilters('p', listFilters, params, idx);
+                sql += attr.sql;
+                idx = attr.nextIdx;
+            }
+        } else {
+            const attr = appendAttributeFilters('p', listFilters, params, idx);
+            sql += attr.sql;
+            idx = attr.nextIdx;
         }
-        if (subcategory && subcategory !== 'all') {
-            sql += ` AND LOWER(TRIM(subcategory)) = LOWER(TRIM($${idx}::text))`;
-            params.push(subcategory);
-            idx++;
-        }
-        if (deity && deity !== 'all') {
-            sql += ` AND deity = $${idx}`;
-            params.push(deity);
-            idx++;
-        }
-        if (planet && planet !== 'all') {
-            sql += ` AND planet = $${idx}`;
-            params.push(planet);
-            idx++;
-        }
-        if (rarity && rarity !== 'all') {
-            sql += ` AND rarity = $${idx}`;
-            params.push(rarity);
-            idx++;
-        }
+
         if (search) {
-            sql += ` AND (name ILIKE $${idx} OR description ILIKE $${idx})`;
-            params.push(`%${search}%`);
-            idx++;
-        }
-        if (purpose && purpose !== 'all') {
-            sql += ` AND EXISTS (
-                SELECT 1
-                FROM unnest(COALESCE(purposes, ARRAY[]::text[])) AS p(token)
-                WHERE LOWER(TRIM(p.token)) = LOWER(TRIM($${idx}::text))
-            )`;
-            params.push(String(purpose).trim());
-            idx++;
+            const searchPattern = `%${search}%`;
+            if (includeLinkedCombos && combosCategoryId != null && categoryId != null) {
+                params.push(searchPattern, combosCategoryId, String(category).trim());
+                const searchParam = idx;
+                const combosParam = idx + 1;
+                const categoryNameParam = idx + 2;
+                sql += ` AND (
+                    (p.name ILIKE $${searchParam} OR p.description ILIKE $${searchParam})
+                    OR (
+                        p.category_id = $${combosParam}
+                        AND EXISTS (
+                            SELECT 1
+                            FROM unnest(COALESCE(p.related_categories, ARRAY[]::text[])) AS rc(token)
+                            WHERE LOWER(TRIM(rc.token)) = LOWER(TRIM($${categoryNameParam}::text))
+                        )
+                        AND (p.name ILIKE $${searchParam} OR p.description ILIKE $${searchParam})
+                    )
+                )`;
+                idx += 3;
+            } else {
+                sql += ` AND (p.name ILIKE $${idx} OR p.description ILIKE $${idx})`;
+                params.push(searchPattern);
+                idx++;
+            }
         }
         if (featured !== undefined) {
             const featuredValue = String(featured).toLowerCase() === 'true';
-            sql += ` AND is_featured = $${idx}`;
+            sql += ` AND p.is_featured = $${idx}`;
             params.push(featuredValue);
             idx++;
         }
 
         const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
         const offset = parseInt(req.query.offset, 10) || 0;
-        sql += ` ORDER BY created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`;
+        sql += ` ORDER BY p.created_at ASC LIMIT $${idx} OFFSET $${idx + 1}`;
         params.push(limit, offset);
 
         const productsRes = await query(sql, params);
@@ -330,7 +406,7 @@ export const getProductBySlug = async (req, res) => {
 
         const productRes = await query(
             `SELECT id, slug, name, description, short_description, price, stock_quantity,
-                    category_id, subcategory, deity, benefits, purposes, planet, rarity, status, created_at,
+                    category_id, subcategory, deity, benefits, elements, purposes, planet, rarity, status, created_at,
                     discount_percent, is_featured, sale_type,
                     product_measure_value, product_measure_unit
              FROM products WHERE slug = $1 AND status = 'active'`,
@@ -369,6 +445,7 @@ export const getProductBySlug = async (req, res) => {
                 subcategory: product.subcategory || '',
                 deity: product.deity || '',
                 benefits: product.benefits || '',
+                elements: product.elements || '',
                 purposes: Array.isArray(product.purposes) ? product.purposes : [],
                 planet: product.planet || '',
                 rarity: product.rarity || '',
