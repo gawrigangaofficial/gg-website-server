@@ -1,6 +1,18 @@
 import { query } from '../config/db.js';
 import { getS3PublicUrl } from '../config/s3.js';
 
+/** Read a text column from a DB row (snake_case / camelCase). */
+function pickTextField(row, ...keys) {
+    if (!row || typeof row !== 'object') return '';
+    for (const key of keys) {
+        const raw = row[key];
+        if (raw == null) continue;
+        const text = String(raw).trim();
+        if (text) return text;
+    }
+    return '';
+}
+
 /** Read discount from DB row (node-pg uses snake_case; tolerate camelCase). Null/empty → null; 0+ → number. */
 function pickDiscountPercent(row) {
     if (!row || typeof row !== 'object') return null;
@@ -444,8 +456,8 @@ export const getProductBySlug = async (req, res) => {
                 category: categoryName,
                 subcategory: product.subcategory || '',
                 deity: product.deity || '',
-                benefits: product.benefits || '',
-                elements: product.elements || '',
+                benefits: pickTextField(product, 'benefits', 'Benefits'),
+                elements: pickTextField(product, 'elements', 'Elements'),
                 purposes: Array.isArray(product.purposes) ? product.purposes : [],
                 planet: product.planet || '',
                 rarity: product.rarity || '',
@@ -454,7 +466,7 @@ export const getProductBySlug = async (req, res) => {
                 sale_type: normalizeSaleType(product.sale_type),
                 images,
                 measures: measuresFromProductRow(product),
-                who_can_use: product.who_can_use || '',
+                who_can_use: pickTextField(product, 'who_can_use', 'whoCanUse', 'WhoCanUse'),
             },
         });
     } catch (error) {
