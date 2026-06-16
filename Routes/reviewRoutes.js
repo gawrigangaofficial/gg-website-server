@@ -3,6 +3,7 @@ import multer from 'multer';
 import { authenticate, optionalAuthenticate } from '../Middleware/authMiddleware.js';
 import {
     getReviewsByProduct,
+    getPublicReviews,
     addReview,
     deleteReview,
     uploadReviewImage,
@@ -39,6 +40,7 @@ const uploadReviewImageMiddleware = (req, res, next) => {
     });
 };
 
+router.get('/public', getPublicReviews);
 router.get('/product/:productId', optionalAuthenticate, getReviewsByProduct);
 router.post('/upload-image', authenticate, uploadReviewImageMiddleware, uploadReviewImage);
 router.post('/', authenticate, addReview);
