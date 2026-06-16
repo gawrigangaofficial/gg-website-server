@@ -189,6 +189,34 @@ export const getReviewsByProduct = async (req, res) => {
     }
 };
 
+export const getPublicReviews = async (req, res) => {
+    try {
+        const parsedLimit = Number.parseInt(String(req.query?.limit ?? '100'), 10);
+        const limit = Number.isFinite(parsedLimit)
+            ? Math.min(Math.max(parsedLimit, 1), 200)
+            : 100;
+
+        const resQ = await query(
+            `SELECT r.id, r.product_id, r.reviewer_name, r.rating, r.comment, r.image_url,
+                    r.verified, r.created_at,
+                    p.name AS product_name, p.slug AS product_slug
+             FROM reviews r
+             LEFT JOIN products p ON p.id = r.product_id
+             WHERE r.verified = true
+             ORDER BY r.created_at DESC
+             LIMIT $1`,
+            [limit],
+        );
+
+        res.status(200).json({ success: true, data: resQ.rows || [] });
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+        });
+    }
+};
+
 export const addReview = async (req, res) => {
     try {
         const authUserId = req.user?.id ?? null;
