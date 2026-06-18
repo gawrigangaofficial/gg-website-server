@@ -20,6 +20,7 @@ import couponRoutes from './Routes/couponRoutes.js';
 import blogRoutes from './Routes/blogRoutes.js';
 import preorderRoutes from './Routes/preorderRoutes.js';
 import contactRoutes from './Routes/contactRoutes.js';
+import guidanceRoutes from './Routes/guidanceRoutes.js';
 import { isConfigured as mailConfigured } from './config/mailer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -146,6 +147,11 @@ const preorderLimiter = rateLimit({
   max: 30,
   message: { success: false, message: 'Too many preorder requests. Please try again later.' },
 });
+const guidanceLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 25,
+  message: { success: false, message: 'Too many guidance requests. Please try again later.' },
+});
 const reviewUploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -160,6 +166,7 @@ app.use('/api/payment/initiate', paymentInitLimiter);
 app.use('/api/payment/callback', paymentCallbackLimiter);
 app.use('/api/contact', contactLimiter);
 app.use('/api/preorders', preorderLimiter);
+app.use('/api/guidance-requests', guidanceLimiter);
 app.use('/api/reviews/upload-image', reviewUploadLimiter);
 
 // Payment callback must be registered BEFORE CORS so Easebuzz redirect is never blocked
@@ -217,6 +224,7 @@ app.use('/api/coupons', couponRoutes);
 app.use('/api/blogs', blogRoutes);
 app.use('/api/preorders', preorderRoutes);
 app.use('/api/contact', contactRoutes);
+app.use('/api/guidance-requests', guidanceRoutes);
 
 // Error handling for undefined API routes
 app.use((req, res, next) => {
