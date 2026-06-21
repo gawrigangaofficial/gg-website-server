@@ -33,6 +33,15 @@ function normalizeSaleType(raw) {
     return 'order';
 }
 
+const PRODUCT_IMAGE_KEYS = ['image1', 'image2', 'image3', 'image4', 'image5', 'image6', 'image7', 'image8'];
+const VIDEO_URL_PATTERN = /\.(mp4|webm|mov|m4v|avi|mkv)(\?|#|$)/i;
+
+function isVideoMediaUrl(url) {
+    if (!url) return false;
+    const base = String(url).trim().split(/[?#]/)[0];
+    return VIDEO_URL_PATTERN.test(base) || /\/videos?\//i.test(base);
+}
+
 function pushImageFromValue(out, value) {
     if (value == null) return;
 
@@ -73,40 +82,41 @@ function pushImageFromValue(out, value) {
         return;
     }
 
-    out.push(getS3PublicUrl(raw) || raw);
+    const resolved = getS3PublicUrl(raw) || raw;
+    if (isVideoMediaUrl(resolved)) return;
+    out.push(resolved);
 }
 
 function toProductImages(imagesData) {
     if (!imagesData || typeof imagesData !== 'object') return [];
 
-    // Explicit legacy schema support: image1..image8
-    const explicitLegacyKeys = ['image1', 'image2', 'image3', 'image4', 'image5', 'image6', 'image7', 'image8'];
-
-    const keys = Object.keys(imagesData);
-    const orderedNumericImageKeys = keys
-        .filter((key) => /^image[_-]?\d+$/i.test(key))
-        .sort((a, b) => {
-            const aNum = Number(a.replace(/\D+/g, '')) || 0;
-            const bNum = Number(b.replace(/\D+/g, '')) || 0;
-            return aNum - bNum;
-        });
-
-    // Also support common alternate column names from legacy schemas.
-    const fuzzyKeys = keys.filter((key) =>
-        /(^|_)(image|img|photo|pic|thumbnail|banner|url|path|file)(_|$)/i.test(key),
-    );
-
-    const candidateKeys = [
-        ...explicitLegacyKeys.filter((k) => Object.prototype.hasOwnProperty.call(imagesData, k)),
-        ...orderedNumericImageKeys,
-        ...fuzzyKeys.filter((k) => !orderedNumericImageKeys.includes(k)),
-    ];
-
     const out = [];
-    candidateKeys.forEach((key) => pushImageFromValue(out, imagesData[key]));
+    PRODUCT_IMAGE_KEYS.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(imagesData, key)) {
+            pushImageFromValue(out, imagesData[key]);
+        }
+    });
 
     // Preserve order, remove duplicates.
     return [...new Set(out)];
+}
+
+/** Optional product video from product_images.video_url (S3 Videos/ folder). */
+function toProductVideoUrl(imagesData) {
+    if (!imagesData || typeof imagesData !== 'object') return null;
+    const raw = imagesData.video_url;
+    if (raw == null) return null;
+    const trimmed = String(raw).trim();
+    if (!trimmed || trimmed.toLowerCase() === 'null') return null;
+    return getS3PublicUrl(trimmed) || trimmed;
+}
+
+function resolveProductVideoUrl(imageRows) {
+    for (const row of imageRows || []) {
+        const url = toProductVideoUrl(row);
+        if (url) return url;
+    }
+    return null;
 }
 
 /** Format numeric measure for API (e.g. 200.0000 → "200"). */
@@ -433,7 +443,9 @@ export const getProductBySlug = async (req, res) => {
             'SELECT * FROM product_images WHERE product_id = $1',
             [product.id],
         );
-        const images = (imgRes.rows || []).flatMap((row) => toProductImages(row));
+        const imageRows = imgRes.rows || [];
+        const images = imageRows.flatMap((row) => toProductImages(row));
+        const videoUrl = resolveProductVideoUrl(imageRows);
 
         let categoryName = '';
         if (product.category_id) {
@@ -465,6 +477,7 @@ export const getProductBySlug = async (req, res) => {
                 is_featured: product.is_featured ?? false,
                 sale_type: normalizeSaleType(product.sale_type),
                 images,
+                video_url: videoUrl,
                 measures: measuresFromProductRow(product),
                 who_can_use: pickTextField(product, 'who_can_use', 'whoCanUse', 'WhoCanUse'),
             },
