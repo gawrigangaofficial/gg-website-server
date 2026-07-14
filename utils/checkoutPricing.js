@@ -1,4 +1,5 @@
 import { buildCartContext, evaluateCouponForCart } from '../Controller/couponController.js';
+import { getShippingAmountForPaymentMethod } from './deliveryCharges.js';
 
 const TOLERANCE = 0.05;
 
@@ -26,7 +27,7 @@ export async function validateCheckoutTotals({
   }
 
   const normalizedPaymentMethod = String(payment_method || '').toLowerCase();
-  const serverShipping = normalizedPaymentMethod === 'cod' ? 120 : 70;
+  const serverShipping = await getShippingAmountForPaymentMethod(normalizedPaymentMethod);
   const clientShipping = Number(shipping_charges || 0);
   if (Math.abs(serverShipping - clientShipping) > TOLERANCE) {
     // Keep shipping server-authoritative so minor client drift/hot-reload does not block checkout.
