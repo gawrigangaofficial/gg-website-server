@@ -2,6 +2,7 @@ import sha512 from 'js-sha512';
 import pool, { query } from '../config/db.js';
 import { validateCheckoutTotals, amountsMatch } from '../utils/checkoutPricing.js';
 import { queueNewOrderNotification } from '../utils/adminNotification.js';
+import { generateNextOrderNumber } from './orderController.js';
 
 const EASEBUZZ_KEY = process.env.EASEBUZZ_KEY;
 const EASEBUZZ_SALT = process.env.EASEBUZZ_SALT;
@@ -101,9 +102,6 @@ async function createOrderFromDraft(draft, easebuzzTxnId = null) {
     const items = draft.items && Array.isArray(draft.items) ? draft.items : [];
     if (items.length === 0) return { order: null, error: 'No items in draft' };
 
-    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-    const todayStart = new Date().toISOString().split('T')[0];
-
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -140,12 +138,7 @@ async function createOrderFromDraft(draft, easebuzzTxnId = null) {
             }
         }
 
-        const countRes = await client.query(
-            'SELECT COUNT(*) AS c FROM orders WHERE created_at >= $1::date',
-            [todayStart],
-        );
-        const count = parseInt(countRes.rows[0]?.c || 0, 10);
-        const orderNumber = `GG-${today}-${String(count + 1).padStart(5, '0')}`;
+        const orderNumber = await generateNextOrderNumber(client);
 
         const orderParams = [
             draft.user_id,

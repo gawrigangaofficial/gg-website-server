@@ -88,25 +88,6 @@ function publicAuthUser(row) {
   return rest;
 }
 
-/** Required when registering a new account (phone OTP). At least two name parts. */
-function validateSignupFullName(raw) {
-  const s = raw != null ? String(raw).trim() : '';
-  if (!s) {
-    return {
-      ok: false,
-      message: 'Please enter your first and last name.',
-    };
-  }
-  if (s.length > 200) {
-    return { ok: false, message: 'Name is too long.' };
-  }
-  const parts = s.split(/\s+/).filter(Boolean);
-  if (parts.length < 2) {
-    return { ok: false, message: 'Please enter your first and last name.' };
-  }
-  return { ok: true, value: s };
-}
-
 function sanitizeDltDisplayName(raw) {
   const s = String(raw || '')
     .trim()
@@ -337,7 +318,6 @@ export const sendPhoneOtp = async (req, res) => {
       phone_number: phoneNumberBody,
       full_name: fullNameBody,
       name: nameBody,
-      is_signup: isSignupBody,
     } = req.body;
     let nameForSms = fullNameBody != null ? fullNameBody : nameBody;
     const phoneNumber = normalizeIndianPhone(phoneNumberBody);
@@ -348,34 +328,10 @@ export const sendPhoneOtp = async (req, res) => {
       });
     }
 
-    const isSignupFlow = isSignupBody === true;
-
-    if (isSignupFlow) {
-      const v = validateSignupFullName(nameForSms);
-      if (!v.ok) {
-        return res.status(400).json({
-          success: false,
-          message: v.message,
-        });
-      }
-      nameForSms = v.value;
+    if (nameForSms != null && String(nameForSms).trim() !== '') {
+      nameForSms = String(nameForSms).trim();
     } else {
-      const skipLoginDbCheck =
-        phoneNumber === DEMO_PHONE_NUMBER && process.env.NODE_ENV !== 'production';
-      if (!skipLoginDbCheck) {
-        const registered = await query(
-          'SELECT id FROM users WHERE phone_number = $1 LIMIT 1',
-          [phoneNumber],
-        );
-        if (registered.rows.length === 0) {
-          return res.status(404).json({
-            success: false,
-            code: 'NO_ACCOUNT',
-            message:
-              'No account found for this mobile number. Please create an account first.',
-          });
-        }
-      }
+      nameForSms = null;
     }
 
     if (
@@ -429,7 +385,6 @@ export const verifyPhoneOtp = async (req, res) => {
       otp,
       full_name: fullNameBody,
       name,
-      is_signup: isSignupBody,
     } = req.body;
     const phoneNumber = normalizeIndianPhone(phoneNumberBody);
     const otpText = String(otp || '').trim();
@@ -505,38 +460,11 @@ export const verifyPhoneOtp = async (req, res) => {
       [otpRequest.id],
     );
 
-    const existingByPhone = await query('SELECT id FROM users WHERE phone_number = $1', [
-      phoneNumber,
-    ]);
+    const existingByPhone = await query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
     const isNewPhoneUser = existingByPhone.rows.length === 0;
-    const isSignupFlow = isSignupBody === true;
-
-    const allowLoginWithoutExistingUser =
-      !isSignupFlow &&
-      isNewPhoneUser &&
-      phoneNumber === DEMO_PHONE_NUMBER &&
-      process.env.NODE_ENV !== 'production';
-
-    if (!isSignupFlow && isNewPhoneUser && !allowLoginWithoutExistingUser) {
-      return res.status(400).json({
-        success: false,
-        code: 'NO_ACCOUNT',
-        message:
-          'No account for this number. Use Create account to register, then sign in.',
-      });
-    }
 
     let fullNameForUser = fullNameBody != null ? fullNameBody : name;
-    if (isNewPhoneUser && isSignupFlow) {
-      const v = validateSignupFullName(fullNameForUser);
-      if (!v.ok) {
-        return res.status(400).json({
-          success: false,
-          message: v.message,
-        });
-      }
-      fullNameForUser = v.value;
-    } else if (fullNameForUser != null && String(fullNameForUser).trim() !== '') {
+    if (fullNameForUser != null && String(fullNameForUser).trim() !== '') {
       fullNameForUser = String(fullNameForUser).trim();
     } else {
       fullNameForUser = null;
@@ -546,7 +474,7 @@ export const verifyPhoneOtp = async (req, res) => {
     const token = signToken(user);
     setAuthCookie(res, token);
 
-    if (isNewPhoneUser && isSignupFlow) {
+    if (isNewPhoneUser) {
       queueNewAccountNotification(user);
     }
 

@@ -4,6 +4,58 @@ import { ensureCashbackSchema } from './cashbackController.js';
 import { validateCheckoutTotals, amountsMatch } from '../utils/checkoutPricing.js';
 import { queueNewOrderNotification } from '../utils/adminNotification.js';
 
+let orderNumberSequenceEnsured = false;
+
+async function ensureOrderNumberSequence(client) {
+    if (orderNumberSequenceEnsured) return;
+
+    await client.query('SELECT pg_advisory_xact_lock($1)', [482913]);
+    await client.query(
+        `CREATE SEQUENCE IF NOT EXISTS order_number_seq
+         AS BIGINT
+         START WITH 1
+         INCREMENT BY 1
+         MINVALUE 1`,
+    );
+
+    const maxRes = await client.query(
+        `SELECT COALESCE(
+            MAX((regexp_match(order_number, '([0-9]+)$'))[1]::bigint),
+            0
+          ) AS max_suffix
+         FROM orders
+         WHERE order_number IS NOT NULL
+           AND order_number ~ '([0-9]+)$'`,
+    );
+    const maxSuffix = Number(maxRes.rows[0]?.max_suffix || 0);
+
+    const seqRes = await client.query(
+        'SELECT last_value, is_called FROM order_number_seq',
+    );
+    const lastValue = Number(seqRes.rows[0]?.last_value || 0);
+    const isCalled = Boolean(seqRes.rows[0]?.is_called);
+    const currentValue = isCalled ? lastValue : 0;
+    const alignedValue = Math.max(maxSuffix, currentValue);
+
+    if (alignedValue > 0 && alignedValue !== currentValue) {
+        await client.query("SELECT setval('order_number_seq', $1, true)", [alignedValue]);
+    }
+
+    orderNumberSequenceEnsured = true;
+}
+
+export async function generateNextOrderNumber(client) {
+    await ensureOrderNumberSequence(client);
+
+    const seqRes = await client.query(
+        "SELECT nextval('order_number_seq') AS order_seq",
+    );
+    const orderSeq = Number(seqRes.rows[0]?.order_seq || 0);
+    const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
+
+    return `GG-${today}-${String(orderSeq).padStart(5, '0')}`;
+}
+
 export const createOrder = async (req, res) => {
     const client = await pool.connect();
     try {
@@ -83,18 +135,9 @@ export const createOrder = async (req, res) => {
         const { effectiveDiscount, appliedCoupon, computedPreWallet } = pricing;
         const computedFinalAmount = computedPreWallet;
         const requestedWalletAmount = use_wallet ? Math.max(0, Number(wallet_amount_to_use) || 0) : 0;
-        const today = new Date().toISOString().split('T')[0].replace(/-/g, '');
-        const todayStart = new Date().toISOString().split('T')[0];
-
-        const countRes = await query(
-            'SELECT COUNT(*) AS c FROM orders WHERE created_at >= $1::date',
-            [todayStart],
-        );
-        const count = parseInt(countRes.rows[0]?.c || 0, 10);
-        const orderNumber = `GG-${today}-${String(count + 1).padStart(5, '0')}`;
-
         await client.query('BEGIN');
         await ensureCashbackSchema();
+        const orderNumber = await generateNextOrderNumber(client);
 
         let walletAmountUsed = 0;
         let walletBalanceAfter = null;
