@@ -22,16 +22,29 @@ export async function sendAdminNotification({ subject, text, html }) {
   const adminNotificationEmail = getAdminNotificationEmail();
 
   if (!adminNotificationEmail) {
-    console.warn('[AdminNotification] ADMIN_NOTIFICATION_EMAIL is not configured');
+    console.warn(
+      '[AdminNotification] No admin email configured. Set ADMIN_NOTIFICATION_EMAIL or ADMIN_NOTIFY_EMAILS in server/.env',
+    );
     return { success: false, error: 'ADMIN_NOTIFICATION_EMAIL not configured' };
   }
 
-  return sendMail({
+  const result = await sendMail({
     to: adminNotificationEmail,
     subject,
     text,
     html,
   });
+
+  if (!result.success) {
+    console.error(
+      '[AdminNotification] Failed to send to',
+      adminNotificationEmail,
+      ':',
+      result.error || 'unknown error',
+    );
+  }
+
+  return result;
 }
 
 export function queueNewAccountNotification(user = {}) {
@@ -44,9 +57,16 @@ export function queueNewAccountNotification(user = {}) {
     `Role: ${safe(user.role, 'user')}`,
   ].join('\n');
 
-  sendAdminNotification({ subject, text }).catch((err) => {
-    console.error('[AdminNotification] new account email failed:', err?.message || err);
-  });
+  Promise.resolve()
+    .then(() => sendAdminNotification({ subject, text }))
+    .then((result) => {
+      if (result?.success) {
+        console.log('[AdminNotification] New account email sent');
+      }
+    })
+    .catch((err) => {
+      console.error('[AdminNotification] new account email failed:', err?.message || err);
+    });
 }
 
 export function queueNewOrderNotification(order = {}) {
@@ -62,7 +82,14 @@ export function queueNewOrderNotification(order = {}) {
     `Order Status: ${safe(order.order_status)}`,
   ].join('\n');
 
-  sendAdminNotification({ subject, text }).catch((err) => {
-    console.error('[AdminNotification] new order email failed:', err?.message || err);
-  });
+  Promise.resolve()
+    .then(() => sendAdminNotification({ subject, text }))
+    .then((result) => {
+      if (result?.success) {
+        console.log('[AdminNotification] New order email sent');
+      }
+    })
+    .catch((err) => {
+      console.error('[AdminNotification] new order email failed:', err?.message || err);
+    });
 }

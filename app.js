@@ -1,5 +1,5 @@
+import './config/loadEnv.js';
 import express from 'express';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
@@ -25,7 +25,6 @@ import guidanceRoutes from './Routes/guidanceRoutes.js';
 import { isConfigured as mailConfigured } from './config/mailer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
