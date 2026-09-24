@@ -22,6 +22,7 @@ import blogRoutes from './Routes/blogRoutes.js';
 import preorderRoutes from './Routes/preorderRoutes.js';
 import contactRoutes from './Routes/contactRoutes.js';
 import guidanceRoutes from './Routes/guidanceRoutes.js';
+import recoveryRoutes from './Routes/recoveryRoutes.js';
 import { isConfigured as mailConfigured } from './config/mailer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -127,6 +128,22 @@ const otpVerifyLimiter = rateLimit({
   message: { success: false, message: 'Too many verification attempts. Try again later.' },
 });
 
+/** Guest checkout session (creates soft account by phone) — tighter than general API. */
+const guestCheckoutLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many guest checkout attempts. Try again in a few minutes.' },
+  keyGenerator: (req) => {
+    const raw = req.body?.phone_number;
+    const digits = String(raw || '').replace(/\D/g, '');
+    const n = digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : digits;
+    if (/^[6-9]\d{9}$/.test(n)) return `guest-phone:${n}`;
+    return `guest-ip:${req.ip || 'unknown'}`;
+  },
+});
+
 const paymentInitLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
@@ -162,6 +179,7 @@ app.use('/api/', apiLimiter);
 app.use('/api/auth/otp/send', otpSendPerPhoneLimiter);
 app.use('/api/auth/otp/send', otpSendIpLimiter);
 app.use('/api/auth/otp/verify', otpVerifyLimiter);
+app.use('/api/auth/guest-checkout', guestCheckoutLimiter);
 app.use('/api/payment/initiate', paymentInitLimiter);
 app.use('/api/payment/callback', paymentCallbackLimiter);
 app.use('/api/contact', contactLimiter);
@@ -226,6 +244,7 @@ app.use('/api/blogs', blogRoutes);
 app.use('/api/preorders', preorderRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/guidance-requests', guidanceRoutes);
+app.use('/api', recoveryRoutes);
 
 // Error handling for undefined API routes
 app.use((req, res, next) => {

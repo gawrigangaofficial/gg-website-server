@@ -3,6 +3,7 @@ import pool, { query } from '../config/db.js';
 import { validateCheckoutTotals, amountsMatch } from '../utils/checkoutPricing.js';
 import { queueNewOrderNotification } from '../utils/adminNotification.js';
 import { generateNextOrderNumber } from './orderController.js';
+import { markAbandonedCartsRecovered } from './recoveryController.js';
 
 const EASEBUZZ_KEY = process.env.EASEBUZZ_KEY;
 const EASEBUZZ_SALT = process.env.EASEBUZZ_SALT;
@@ -231,6 +232,10 @@ async function createOrderFromDraft(draft, easebuzzTxnId = null) {
 
         await client.query('COMMIT');
         queueNewOrderNotification(order);
+        markAbandonedCartsRecovered({
+            userId: draft.user_id,
+            orderId: order.id,
+        }).catch(() => {});
         return { order, error: null };
     } catch (err) {
         await client.query('ROLLBACK');

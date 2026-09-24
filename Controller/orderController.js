@@ -3,6 +3,10 @@ import pool from '../config/db.js';
 import { ensureCashbackSchema } from './cashbackController.js';
 import { validateCheckoutTotals, amountsMatch } from '../utils/checkoutPricing.js';
 import { queueNewOrderNotification } from '../utils/adminNotification.js';
+import {
+    enqueueReviewRequestForOrder,
+    markAbandonedCartsRecovered,
+} from './recoveryController.js';
 
 let orderNumberSequenceEnsured = false;
 
@@ -271,6 +275,12 @@ export const createOrder = async (req, res) => {
         const addrRes = await client.query('SELECT * FROM addresses WHERE id = $1', [order.address_id]);
         await client.query('COMMIT');
         queueNewOrderNotification(order);
+        const addrPhone = addrRes.rows[0]?.receiver_phone;
+        markAbandonedCartsRecovered({
+            phoneNumber: addrPhone,
+            userId: user_id,
+            orderId: order.id,
+        }).catch(() => {});
         const responseData = {
             ...order,
             addresses: addrRes.rows[0] || null,
@@ -483,6 +493,10 @@ export const updateOrderStatus = async (req, res) => {
         const data = resQ.rows[0];
         if (!data) {
             return res.status(404).json({ success: false, message: 'Order not found' });
+        }
+
+        if (String(data.order_status || '').toLowerCase() === 'delivered') {
+            enqueueReviewRequestForOrder(data.id).catch(() => {});
         }
 
         res.status(200).json({

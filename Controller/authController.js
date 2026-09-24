@@ -378,6 +378,55 @@ export const sendPhoneOtp = async (req, res) => {
   }
 };
 
+/**
+ * Guest checkout: create/fetch user by phone + name and set auth cookie without OTP.
+ * Lets buyers place an order; they can verify OTP later to “claim” the account for order tracking.
+ */
+export const startGuestCheckout = async (req, res) => {
+  try {
+    const phoneNumber = normalizeIndianPhone(req.body?.phone_number);
+    const rawName = req.body?.full_name != null ? req.body.full_name : req.body?.name;
+    const fullName = rawName != null && String(rawName).trim() !== '' ? String(rawName).trim() : null;
+
+    if (!phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enter a valid 10-digit Indian mobile number',
+      });
+    }
+    if (!fullName || fullName.length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name is required for guest checkout',
+      });
+    }
+
+    const existingByPhone = await query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
+    const isNewPhoneUser = existingByPhone.rows.length === 0;
+
+    const user = await createOrFetchPhoneUser(phoneNumber, fullName);
+    const token = signToken(user);
+    setAuthCookie(res, token);
+
+    if (isNewPhoneUser) {
+      queueNewAccountNotification(user);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Guest checkout started',
+      guest: true,
+      user: publicAuthUser(user),
+    });
+  } catch (err) {
+    console.error('Guest checkout error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Failed to start guest checkout',
+    });
+  }
+};
+
 export const verifyPhoneOtp = async (req, res) => {
   try {
     const {
