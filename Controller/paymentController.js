@@ -16,15 +16,30 @@ const EASEBUZZ_ENV = (process.env.EASEBUZZ_ENV || 'test').toLowerCase();
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '');
 const PAYMENT_CALLBACK_BASE_URL = (process.env.PAYMENT_CALLBACK_BASE_URL || '').replace(/\/$/, '');
 
-const EASEBUZZ_BASE_URL =
-    EASEBUZZ_ENV === 'prod' ? 'https://pay.easebuzz.in' : 'https://testpay.easebuzz.in';
+const EASEBUZZ_BASE_URL = ['prod', 'production', 'live'].includes(EASEBUZZ_ENV)
+    ? 'https://pay.easebuzz.in'
+    : 'https://testpay.easebuzz.in';
 
 function getPublicBaseUrl(req) {
     if (PAYMENT_CALLBACK_BASE_URL) return PAYMENT_CALLBACK_BASE_URL;
-    if (process.env.NODE_ENV === 'production') {
-        throw new Error('PAYMENT_CALLBACK_BASE_URL is required in production');
+    const proto = String(req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
+    const host = String(req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
+    if (host && !/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host)) {
+        return `${proto}://${host}`.replace(/\/$/, '');
     }
+    if (process.env.NODE_ENV === 'production') return 'https://api.gawriganga.com';
     return 'http://localhost:5000';
+}
+
+function gatewayFailureMessage(result) {
+    if (!result || typeof result !== 'object') return 'Invalid response from payment gateway';
+    const data = result.data;
+    const fromData = data && typeof data === 'object'
+        ? data.error_desc || data.error || data.message
+        : null;
+    return String(
+        result.error_desc || result.message || result.error || fromData || 'Invalid response from payment gateway',
+    );
 }
 
 function generatePaymentHash(data, key, salt) {
@@ -458,10 +473,11 @@ export const initiatePayment = async (req, res) => {
                 : result.data?.access_key || result.access_key || result.accessKey;
 
         if (!accessKey) {
+            const gatewayMessage = gatewayFailureMessage(result);
+            console.error('Easebuzz initiate failed:', gatewayMessage, result);
             return res.status(502).json({
                 success: false,
-                message: 'Could not get payment link',
-                detail: result.message || result.error || 'Invalid response from payment gateway',
+                message: gatewayMessage,
             });
         }
 
@@ -476,7 +492,7 @@ export const initiatePayment = async (req, res) => {
         console.error('initiatePayment error:', error?.message, error);
         return res.status(500).json({
             success: false,
-            message: 'Payment initiation failed',
+            message: error?.message || 'Payment initiation failed',
         });
     }
 };

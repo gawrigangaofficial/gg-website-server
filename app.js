@@ -31,9 +31,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const isProduction = process.env.NODE_ENV === 'production';
 
-if (isProduction) {
-  app.set('trust proxy', 1);
-}
+app.set('trust proxy', 1);
 
 // CORS: allow production client, local dev, and Easebuzz (user is redirected from Easebuzz to our callback)
 const allowedOrigins = [
