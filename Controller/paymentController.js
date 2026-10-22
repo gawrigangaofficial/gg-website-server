@@ -1,6 +1,11 @@
 import sha512 from 'js-sha512';
 import pool, { query } from '../config/db.js';
 import { validateCheckoutTotals, amountsMatch } from '../utils/checkoutPricing.js';
+import {
+    codCollectAmount,
+    codPayNowAmount,
+    formatCodAdvanceNote,
+} from '../utils/codAdvance.js';
 import { queueNewOrderNotification } from '../utils/adminNotification.js';
 import { generateNextOrderNumber } from './orderController.js';
 import { markAbandonedCartsRecovered } from './recoveryController.js';
@@ -99,7 +104,7 @@ async function markDraftProcessingIfPending(draftId) {
     }
 }
 
-async function createOrderFromDraft(draft, easebuzzTxnId = null) {
+async function createOrderFromDraft(draft, easebuzzTxnId = null, options = {}) {
     const items = draft.items && Array.isArray(draft.items) ? draft.items : [];
     if (items.length === 0) return { order: null, error: 'No items in draft' };
 
@@ -140,6 +145,10 @@ async function createOrderFromDraft(draft, easebuzzTxnId = null) {
         }
 
         const orderNumber = await generateNextOrderNumber(client);
+        const isCodAdvance = options.codAdvance === true;
+        const orderTotal = Number(draft.final_amount);
+        const paidNow = isCodAdvance ? codPayNowAmount(orderTotal) : orderTotal;
+        const collectOnDelivery = isCodAdvance ? codCollectAmount(orderTotal, paidNow) : 0;
 
         const orderParams = [
             draft.user_id,
@@ -148,11 +157,11 @@ async function createOrderFromDraft(draft, easebuzzTxnId = null) {
             Number(draft.total_amount) || 0,
             Number(draft.discount_amount) || 0,
             Number(draft.shipping_charges) || 0,
-            Number(draft.final_amount),
-            'easebuzz',
-            'paid',
+            orderTotal,
+            isCodAdvance ? 'cod' : 'easebuzz',
+            isCodAdvance && collectOnDelivery > 0 ? 'partial' : 'paid',
             'pending',
-            null,
+            isCodAdvance ? formatCodAdvanceNote(paidNow, collectOnDelivery) : null,
         ];
 
         let orderRes;
@@ -278,12 +287,7 @@ export const initiatePayment = async (req, res) => {
             email,
             phone,
         } = req.body;
-        if (String(payment_method || '').toLowerCase() === 'cod') {
-            return res.status(400).json({
-                success: false,
-                message: 'COD is not supported on online payment initiate route.',
-            });
-        }
+        const isCodAdvance = String(payment_method || '').toLowerCase() === 'cod';
 
         if (!address_id || !items || !Array.isArray(items) || items.length === 0) {
             return res.status(400).json({
@@ -346,7 +350,14 @@ export const initiatePayment = async (req, res) => {
         }
 
         const amountNum = serverFinalAmount;
-        const amountStr = amountNum.toFixed(2);
+        const gatewayAmount = isCodAdvance ? codPayNowAmount(amountNum) : amountNum;
+        if (isCodAdvance && gatewayAmount <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Nothing is due online for this order.',
+            });
+        }
+        const amountStr = gatewayAmount.toFixed(2);
 
         const draftData = {
             user_id: String(user_id),
@@ -426,7 +437,8 @@ export const initiatePayment = async (req, res) => {
             // Carry wallet data through gateway callback, independent of order_drafts schema.
             udf2: draftData.use_wallet ? '1' : '0',
             udf3: String(draftData.wallet_amount_to_use || 0),
-            udf4: '', udf5: '', udf6: '', udf7: '', udf8: '', udf9: '', udf10: '',
+            udf4: isCodAdvance ? 'cod' : '',
+            udf5: '', udf6: '', udf7: '', udf8: '', udf9: '', udf10: '',
         };
         data.hash = generatePaymentHash(data, EASEBUZZ_KEY, EASEBUZZ_SALT);
 
@@ -544,7 +556,9 @@ export const paymentCallback = async (req, res) => {
             }
             const callbackAmount = Number(body.amount || 0);
             const draftAmount = Number(draft.final_amount || 0);
-            if (!amountsMatch(callbackAmount, draftAmount)) {
+            const isCodAdvance = String(body.udf4 || '').trim() === 'cod';
+            const expectedAmount = isCodAdvance ? codPayNowAmount(draftAmount) : draftAmount;
+            if (!amountsMatch(callbackAmount, expectedAmount)) {
                 console.error('paymentCallback: amount mismatch', { callbackAmount, draftAmount, draftId });
                 await markOrderDraftFailed(draftId).catch(() => {});
                 return res.redirect(302, `${FRONTEND_URL}/order-failed?reason=amount_mismatch`);
@@ -566,7 +580,9 @@ export const paymentCallback = async (req, res) => {
                 ),
             };
 
-            const { order, error: createError } = await createOrderFromDraft(draftWithItems, txnKey);
+            const { order, error: createError } = await createOrderFromDraft(draftWithItems, txnKey, {
+                codAdvance: isCodAdvance,
+            });
             if (createError || !order) {
                 console.error('paymentCallback: createOrderFromDraft failed', createError || 'no order');
                 await markOrderDraftFailed(draftId);

@@ -3,6 +3,7 @@ import pool from '../config/db.js';
 import { ensureCashbackSchema } from './cashbackController.js';
 import { validateCheckoutTotals, amountsMatch } from '../utils/checkoutPricing.js';
 import { queueNewOrderNotification } from '../utils/adminNotification.js';
+import { COD_CONFIRMATION_AMOUNT } from '../utils/codAdvance.js';
 import {
     enqueueReviewRequestForOrder,
     markAbandonedCartsRecovered,
@@ -162,6 +163,14 @@ export const createOrder = async (req, res) => {
         }
 
         const final_amount = Math.max(0, computedFinalAmount - walletAmountUsed);
+
+        if (normalizedPaymentMethod === 'cod' && final_amount > 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                message: `Cash on Delivery needs a ₹${COD_CONFIRMATION_AMOUNT} confirmation payment. Please confirm COD from checkout.`,
+            });
+        }
 
         if (
             clientFinalAmount != null &&

@@ -1,4 +1,5 @@
 import { sendMail } from '../config/mailer.js';
+import { parseCodAdvanceNote } from './codAdvance.js';
 
 function safe(value, fallback = '-') {
   if (value == null) return fallback;
@@ -70,6 +71,7 @@ export function queueNewAccountNotification(user = {}) {
 }
 
 export function queueNewOrderNotification(order = {}) {
+  const codAdvance = parseCodAdvanceNote(order.notes);
   const subject = `New Order Received - ${safe(order.order_number, 'No Number')}`;
   const text = [
     'A new order has been placed.',
@@ -80,6 +82,12 @@ export function queueNewOrderNotification(order = {}) {
     `Payment Method: ${safe(order.payment_method)}`,
     `Payment Status: ${safe(order.payment_status)}`,
     `Order Status: ${safe(order.order_status)}`,
+    ...(codAdvance
+      ? [
+          `Paid online: ${codAdvance.paidNow}`,
+          `Collect on delivery: ${codAdvance.collectOnDelivery}`,
+        ]
+      : []),
   ].join('\n');
 
   Promise.resolve()
